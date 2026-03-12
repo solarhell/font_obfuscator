@@ -1,5 +1,5 @@
 aiofiles==22.1.0
-aliyun-python-sdk-core==2.13.33
+aliyun-python-sdk-core==2.16.0
 aliyun-python-sdk-core-v3==2.13.32
 aliyun-python-sdk-kms==2.16.0
 appdirs==1.4.4
