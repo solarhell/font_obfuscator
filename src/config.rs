@@ -24,6 +24,7 @@ impl Default for FontConfig {
 #[derive(Clone)]
 pub struct AppConfig {
     pub port: u16,
+    pub listen_addr: String,
     pub font: FontConfig,
     pub base_font_path: String,
 }
@@ -35,6 +36,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(1323),
+            listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1".into()),
             font: FontConfig::default(),
             base_font_path: env::var("BASE_FONT_PATH")
                 .unwrap_or_else(|_| "base-font/KaiGenGothicCN-Regular.ttf".into()),
