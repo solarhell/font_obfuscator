@@ -3,7 +3,7 @@ aliyun-python-sdk-core==2.13.33
 aliyun-python-sdk-core-v3==2.13.32
 aliyun-python-sdk-kms==2.16.0
 appdirs==1.4.4
-Brotli==1.0.9
+Brotli==1.2.0
 certifi==2023.7.22
 chardet==4.0.0
 crcmod==1.7
