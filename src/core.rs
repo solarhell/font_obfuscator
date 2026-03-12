@@ -723,6 +723,11 @@ mod tests {
         FontConfig::default()
     }
 
+    fn load_font(path: &str) -> Vec<u8> {
+        std::fs::read(path)
+            .unwrap_or_else(|e| panic!("font not found at {path}: {e}"))
+    }
+
     // ── obfuscate validation tests ──
 
     #[test]
@@ -1270,6 +1275,239 @@ mod tests {
             let gid1 = cmap_lookup(&cmap1, shadow_c as u32);
             let gid2 = cmap_lookup(&cmap2, shadow_c as u32);
             assert_eq!(gid1, gid2, "cmap inconsistent between parses for '{shadow_c}'");
+        }
+    }
+
+    // ── Multi-font auto-detect tests ──
+    //
+    // Test pairs are defined per language group. For each font, we probe its
+    // cmap to find which groups it supports, then run only those tests.
+    // Adding a new font = one line in FONT_PATHS. No manual coverage mapping.
+
+    /// A language group with (plaintext, shadowtext) test pairs and a probe char
+    /// used to detect whether the font supports this group.
+    struct LangGroup {
+        label: &'static str,
+        /// A char that must be in the font's cmap for this group to apply.
+        probe: char,
+        /// (plain, shadow) pairs to test with `obfuscate()`.
+        pairs: &'static [(&'static str, &'static str)],
+        /// Input strings to test with `obfuscate_plus()`.
+        plus_inputs: &'static [&'static str],
+    }
+
+    const LANG_GROUPS: &[LangGroup] = &[
+        LangGroup {
+            label: "latin",
+            probe: 'a',
+            pairs: &[("abcdefgh", "stuvwxyz"), ("ABCDEFGH", "STUVWXYZ")],
+            plus_inputs: &["HelloWorld"],
+        },
+        LangGroup {
+            label: "digits",
+            probe: '0',
+            pairs: &[("0123456789", "9876543210")],
+            plus_inputs: &["Rust2026"],
+        },
+        LangGroup {
+            label: "hiragana",
+            probe: 'あ',
+            pairs: &[("あいうえお", "かきくけこ"), ("さしすせそ", "たちつてと")],
+            plus_inputs: &["おはよう"],
+        },
+        LangGroup {
+            label: "katakana",
+            probe: 'ア',
+            pairs: &[("アイウエオ", "カキクケコ"), ("サシスセソ", "タチツテト")],
+            plus_inputs: &["テスト"],
+        },
+        LangGroup {
+            label: "cjk_common",
+            probe: '你',
+            pairs: &[("你好世界", "他坏天地"), ("价格数量", "商品折扣")],
+            plus_inputs: &["价格998元"],
+        },
+        LangGroup {
+            label: "cjk_kanji",
+            probe: '東',
+            pairs: &[("東京大阪", "南北左右")],
+            plus_inputs: &["東京大学"],
+        },
+        LangGroup {
+            label: "hangul",
+            probe: '가',
+            pairs: &[("가나다라마", "바사아자차"), ("한글테스트", "대한민국인")],
+            plus_inputs: &["서울부산"],
+        },
+    ];
+
+    const FONT_PATHS: &[(&str, &str)] = &[
+        ("KaiGenGothicCN",    "base-font/KaiGenGothicCN-Regular.ttf"),
+        ("Roboto",            "base-font/Roboto-Regular.ttf"),
+        ("NotoSansJP",        "base-font/NotoSansJP-Regular.ttf"),
+        ("NotoSansKR",        "base-font/NotoSansKR-Regular.ttf"),
+        ("NotoSansCJKsc",     "base-font/NotoSansCJKsc-Regular.ttf"),
+        ("WenQuanYiMicroHei", "base-font/WenQuanYiMicroHei.ttf"),
+        ("AlibabaPuHuiTi",    "base-font/Alibaba-PuHuiTi-Regular.ttf"),
+        ("OPPOSans",          "base-font/OPPOSans-R.ttf"),
+        ("MiSans",            "base-font/MiSans-Regular.ttf"),
+    ];
+
+    /// Probe font cmap to find supported language groups.
+    fn detect_groups(font_data: &[u8]) -> Vec<&'static LangGroup> {
+        let font = FontRef::new(font_data).expect("font parse failed in detect_groups");
+        let cmap = font.cmap().expect("font has no cmap");
+        LANG_GROUPS.iter()
+            .filter(|g| cmap_lookup(&cmap, g.probe as u32).is_some())
+            .collect()
+    }
+
+    // ── Assert helpers ──
+
+    fn assert_obfuscate(font_data: &[u8], font_name: &str, plain: &str, shadow: &str, label: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("{font_name}_{label}");
+        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
+            .unwrap_or_else(|e| panic!("{font_name}/{label}: obfuscate failed: {e}"));
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let parsed = FontRef::new(&data)
+            .unwrap_or_else(|e| panic!("{font_name}/{label}: parse failed: {e}"));
+        let cmap = parsed.cmap().unwrap();
+        for c in shadow.chars() {
+            assert!(cmap_lookup(&cmap, c as u32).is_some(),
+                "{font_name}/{label}: shadow char '{c}' missing in cmap");
+        }
+    }
+
+    fn assert_obfuscate_plus(font_data: &[u8], font_name: &str, input: &str, label: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("{font_name}_{label}_plus");
+        let result = obfuscate_plus(input, font_data, &default_config(), dir.path(), &tag, true)
+            .unwrap_or_else(|e| panic!("{font_name}/{label}/plus({input}): failed: {e}"));
+
+        let unique: Vec<char> = deduplicate_str(input).chars().collect();
+        assert_eq!(result.html_entities.len(), unique.len(),
+            "{font_name}/{label}/plus: entity count mismatch");
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let parsed = FontRef::new(&data).unwrap();
+        let cmap = parsed.cmap().unwrap();
+        for (ch, entity) in &result.html_entities {
+            let cp = u32::from_str_radix(entity.trim_start_matches("&#x"), 16)
+                .unwrap_or_else(|_| panic!("{font_name}/plus: bad entity {entity}"));
+            assert!((0xE000..=0xF8FF).contains(&cp),
+                "{font_name}/plus: '{ch}' -> {cp:#x} not in PUA");
+            assert!(cmap_lookup(&cmap, cp).is_some(),
+                "{font_name}/plus: PUA {cp:#x} missing in cmap");
+        }
+    }
+
+    fn assert_ttf_structure(font_data: &[u8], font_name: &str, plain: &str, shadow: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("{font_name}_struct");
+        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
+            .unwrap_or_else(|e| panic!("{font_name}/struct: {e}"));
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        assert_eq!(&data[0..4], &[0x00, 0x01, 0x00, 0x00],
+            "{font_name}: invalid TrueType sfVersion");
+        let parsed = FontRef::new(&data).unwrap();
+        for (table, ok) in [
+            ("head", parsed.head().is_ok()), ("hhea", parsed.hhea().is_ok()),
+            ("maxp", parsed.maxp().is_ok()), ("os2", parsed.os2().is_ok()),
+            ("cmap", parsed.cmap().is_ok()), ("glyf", parsed.glyf().is_ok()),
+            ("post", parsed.post().is_ok()), ("hmtx", parsed.hmtx().is_ok()),
+        ] {
+            assert!(ok, "{font_name}: missing/invalid {table}");
+        }
+        assert_eq!(parsed.head().unwrap().magic_number(), 0x5F0F3CF5,
+            "{font_name}: bad head magic");
+    }
+
+    fn assert_preserves_metrics(font_data: &[u8], font_name: &str, plain: &str, shadow: &str) {
+        let source = FontRef::new(font_data).unwrap();
+        let src_head = source.head().unwrap();
+        let src_hhea = source.hhea().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("{font_name}_metrics");
+        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
+            .unwrap_or_else(|e| panic!("{font_name}/metrics: {e}"));
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let parsed = FontRef::new(&data).unwrap();
+        assert_eq!(parsed.head().unwrap().units_per_em(), src_head.units_per_em(),
+            "{font_name}: unitsPerEm mismatch");
+        assert_eq!(parsed.hhea().unwrap().ascender().to_i16(), src_hhea.ascender().to_i16(),
+            "{font_name}: ascender mismatch");
+        assert_eq!(parsed.hhea().unwrap().descender().to_i16(), src_hhea.descender().to_i16(),
+            "{font_name}: descender mismatch");
+    }
+
+    // ── Test entry points ──
+
+    #[test]
+    fn multi_font_obfuscate() {
+        for &(name, path) in FONT_PATHS {
+            let font_data = load_font(path);
+            let groups = detect_groups(&font_data);
+            assert!(!groups.is_empty(), "{name}: no language groups detected");
+            for group in &groups {
+                for &(plain, shadow) in group.pairs {
+                    assert_obfuscate(&font_data, name, plain, shadow, group.label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_font_obfuscate_plus() {
+        for &(name, path) in FONT_PATHS {
+            let font_data = load_font(path);
+            for group in detect_groups(&font_data) {
+                for input in group.plus_inputs {
+                    assert_obfuscate_plus(&font_data, name, input, group.label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_font_ttf_structure() {
+        for &(name, path) in FONT_PATHS {
+            let font_data = load_font(path);
+            let groups = detect_groups(&font_data);
+            let (plain, shadow) = groups[0].pairs[0];
+            assert_ttf_structure(&font_data, name, plain, shadow);
+        }
+    }
+
+    #[test]
+    fn multi_font_preserves_metrics() {
+        for &(name, path) in FONT_PATHS {
+            let font_data = load_font(path);
+            let groups = detect_groups(&font_data);
+            let (plain, shadow) = groups[0].pairs[0];
+            assert_preserves_metrics(&font_data, name, plain, shadow);
+        }
+    }
+
+    #[test]
+    fn multi_font_woff2() {
+        for &(name, path) in FONT_PATHS {
+            let font_data = load_font(path);
+            let groups = detect_groups(&font_data);
+            let (plain, shadow) = groups[0].pairs[0];
+            let dir = tempfile::tempdir().unwrap();
+            let tag = format!("{name}_woff2");
+            let result = obfuscate(
+                plain, shadow, &font_data, &default_config(), dir.path(), &tag, false,
+            ).unwrap_or_else(|e| panic!("{name}/woff2: {e}"));
+
+            assert!(result.files.contains_key("woff2"), "{name}: no woff2");
+            let woff2 = std::fs::read(&result.files["woff2"]).unwrap();
+            assert_eq!(&woff2[..4], b"wOF2", "{name}: bad woff2 magic");
         }
     }
 }
