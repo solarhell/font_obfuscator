@@ -11,7 +11,7 @@ emoji==1.2.0
 fonttools==4.51.0
 fs==2.4.13
 h11==0.12.0
-h2==4.0.0
+h2==4.3.0
 hpack==4.0.0
 httpcore==0.16.3
 httptools==0.1.1
