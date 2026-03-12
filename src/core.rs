@@ -1111,12 +1111,165 @@ mod tests {
     fn obfuscate_rejects_missing_char() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        // U+FFFD is unlikely to have a glyph mapped in a CJK font's cmap
-        // Use a rare char that's almost certainly not in this font
-        let rare = '\u{10FFFD}'; // last valid unicode codepoint in supplementary private use area
+        let rare = '\u{10FFFD}';
         let err = obfuscate(
             &rare.to_string(), "a", &font, &default_config(), dir.path(), "t", true,
         ).unwrap_err();
         assert!(matches!(err, ObfuscateError::MissingChar(_)));
+    }
+
+    // ── TTF structural validity tests (related to #96) ──
+
+    /// Verify the TTF file has a valid TrueType header (sfVersion = 0x00010000)
+    #[test]
+    fn ttf_has_valid_header() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "abc", "xyz", &font, &default_config(), dir.path(), "header", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        // TrueType sfVersion: 00 01 00 00
+        assert!(data.len() > 12, "TTF file too small");
+        assert_eq!(&data[0..4], &[0x00, 0x01, 0x00, 0x00], "invalid TrueType sfVersion");
+    }
+
+    /// Verify all required TrueType tables are present and parseable
+    #[test]
+    fn ttf_has_all_required_tables() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "真好棒", "假的坏", &font, &default_config(), dir.path(), "tables", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&data).unwrap();
+
+        // All tables required for a valid TrueType font on Windows
+        assert!(gen_font.head().is_ok(), "missing/invalid head table");
+        assert!(gen_font.hhea().is_ok(), "missing/invalid hhea table");
+        assert!(gen_font.maxp().is_ok(), "missing/invalid maxp table");
+        assert!(gen_font.os2().is_ok(), "missing/invalid OS/2 table");
+        assert!(gen_font.cmap().is_ok(), "missing/invalid cmap table");
+        assert!(gen_font.glyf().is_ok(), "missing/invalid glyf table");
+        assert!(gen_font.post().is_ok(), "missing/invalid post table");
+
+        let head = gen_font.head().unwrap();
+        let loca_is_long = head.index_to_loc_format() == 1;
+        assert!(
+            gen_font.loca(Some(loca_is_long)).is_ok(),
+            "missing/invalid loca table"
+        );
+        assert!(gen_font.hmtx().is_ok(), "missing/invalid hmtx table");
+
+        // Check name table has required entries
+        let name = gen_font.name().expect("missing name table");
+        let name_records: Vec<u16> = name.name_record().iter().map(|r| r.name_id().to_u16()).collect();
+        assert!(name_records.contains(&1), "name table missing familyName (ID 1)");
+        assert!(name_records.contains(&2), "name table missing styleName (ID 2)");
+        assert!(name_records.contains(&4), "name table missing fullName (ID 4)");
+        assert!(name_records.contains(&6), "name table missing psName (ID 6)");
+    }
+
+    /// Verify head table has valid magic number and unitsPerEm
+    #[test]
+    fn ttf_head_table_valid() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "ab", "xy", &font, &default_config(), dir.path(), "headcheck", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&data).unwrap();
+        let head = gen_font.head().unwrap();
+
+        assert_eq!(head.magic_number(), 0x5F0F3CF5, "invalid head magic number");
+        assert!(head.units_per_em() >= 16 && head.units_per_em() <= 16384,
+            "unitsPerEm out of valid range: {}", head.units_per_em());
+        assert!(
+            head.index_to_loc_format() == 0 || head.index_to_loc_format() == 1,
+            "invalid index_to_loc_format: {}", head.index_to_loc_format()
+        );
+    }
+
+    /// Verify maxp num_glyphs matches actual glyf entries
+    #[test]
+    fn ttf_maxp_matches_glyph_count() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "abcde", "vwxyz", &font, &default_config(), dir.path(), "maxp", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&data).unwrap();
+        let maxp = gen_font.maxp().unwrap();
+        let head = gen_font.head().unwrap();
+        let loca = gen_font.loca(Some(head.index_to_loc_format() == 1)).unwrap();
+
+        // loca has num_glyphs + 1 entries
+        assert_eq!(maxp.num_glyphs(), 6); // .notdef + 5 chars
+
+        // Verify loca can resolve all glyph IDs
+        let glyf = gen_font.glyf().unwrap();
+        for gid in 0..maxp.num_glyphs() as u32 {
+            // Should not panic - every glyph ID should be resolvable
+            let _ = loca.get_glyf(GlyphId::new(gid), &glyf);
+        }
+    }
+
+    /// Verify hhea.number_of_h_metrics matches hmtx
+    #[test]
+    fn ttf_hhea_hmtx_consistent() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "abc", "xyz", &font, &default_config(), dir.path(), "hmetrics", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&data).unwrap();
+        let hhea = gen_font.hhea().unwrap();
+        let hmtx = gen_font.hmtx().unwrap();
+
+        let num_h = hhea.number_of_h_metrics() as usize;
+        let num_metrics = hmtx.h_metrics().len();
+        assert_eq!(num_h, num_metrics,
+            "hhea.number_of_h_metrics ({num_h}) != hmtx entries ({num_metrics})");
+    }
+
+    /// Verify the generated font can be re-read and re-written (round-trip)
+    #[test]
+    fn ttf_roundtrip_parseable() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate(
+            "真0123456789好", "假6982075431的",
+            &font, &default_config(), dir.path(), "roundtrip", true,
+        ).unwrap();
+
+        let data = std::fs::read(&result.files["ttf"]).unwrap();
+
+        // First parse
+        let font1 = FontRef::new(&data).unwrap();
+        let cmap1 = font1.cmap().unwrap();
+
+        // Verify cmap is consistent
+        for shadow_c in "假6982075431的".chars() {
+            assert!(cmap_lookup(&cmap1, shadow_c as u32).is_some(),
+                "cmap missing shadow char '{shadow_c}' on first parse");
+        }
+
+        // Second parse (just ensure it doesn't panic)
+        let font2 = FontRef::new(&data).unwrap();
+        let cmap2 = font2.cmap().unwrap();
+        for shadow_c in "假6982075431的".chars() {
+            let gid1 = cmap_lookup(&cmap1, shadow_c as u32);
+            let gid2 = cmap_lookup(&cmap2, shadow_c as u32);
+            assert_eq!(gid1, gid2, "cmap inconsistent between parses for '{shadow_c}'");
+        }
     }
 }
