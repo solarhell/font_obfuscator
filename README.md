@@ -1,5 +1,10 @@
 # font_obfuscator
 
+[![Rust](https://img.shields.io/badge/Rust-1.85+-DEA584?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
+[![CI](https://img.shields.io/github/actions/workflow/status/solarhell/font_obfuscator/ci.yml?branch=master&style=for-the-badge&logo=github&label=CI)](https://github.com/solarhell/font_obfuscator/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/solarhell/font_obfuscator?utm_source=oss&utm_medium=github&utm_campaign=solarhell%2Ffont_obfuscator&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews&style=for-the-badge)](https://coderabbit.ai)
+
 [中文](#中文) | [English](#english)
 
 ---
