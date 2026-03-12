@@ -26,7 +26,7 @@ pytz==2021.1
 requests==2.31.0
 requests-async==0.6.2
 rfc3986==2.0.0
-sanic==22.12.0
+sanic==25.12.0
 six==1.16.0
 ujson==5.9.0
 urllib3==1.26.18
