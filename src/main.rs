@@ -39,7 +39,7 @@ async fn main() {
         })
     });
 
-    let addr = format!("0.0.0.0:{}", config.port);
+    let addr = format!("127.0.0.1:{}", config.port);
     tracing::info!("服务启动于 {}", addr);
 
     let state = Arc::new(AppState { config, font_data });
