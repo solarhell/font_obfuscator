@@ -1,0 +1,3 @@
+too-many-arguments-threshold = 7
+type-complexity-threshold = 300
+too-many-lines-threshold = 200

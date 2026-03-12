@@ -7,9 +7,10 @@ use read_fonts::tables::glyf::{Glyf, Glyph as ReadGlyph};
 use read_fonts::tables::loca::Loca;
 use read_fonts::types::GlyphId;
 use read_fonts::{FontRef, TableProvider};
+use write_fonts::FontBuilder;
 use write_fonts::tables::cmap::Cmap as WriteCmap;
 use write_fonts::tables::glyf::{
-    Contour, Glyph as WriteGlyph, GlyfLocaBuilder, SimpleGlyph as WriteSimpleGlyph,
+    Contour, GlyfLocaBuilder, Glyph as WriteGlyph, SimpleGlyph as WriteSimpleGlyph,
 };
 use write_fonts::tables::head::Head as WriteHead;
 use write_fonts::tables::hhea::Hhea as WriteHhea;
@@ -19,7 +20,6 @@ use write_fonts::tables::maxp::Maxp as WriteMaxp;
 use write_fonts::tables::name::Name as WriteName;
 use write_fonts::tables::os2::Os2 as WriteOs2;
 use write_fonts::tables::post::Post as WritePost;
-use write_fonts::FontBuilder;
 
 use crate::config::FontConfig;
 use crate::utils::{deduplicate_str, str_has_emoji, str_has_whitespace};
@@ -38,13 +38,15 @@ pub enum ObfuscateError {
     MissingChar(char),
     #[error("字体读取错误: {0}")]
     FontRead(String),
+    #[error("字形数量超出上限(65535)")]
+    TooManyGlyphs,
     #[error("字体构建错误: {0}")]
     FontBuild(String),
     #[error("IO错误: {0}")]
     Io(#[from] std::io::Error),
 }
 
-/// Look up a Unicode codepoint in the cmap table, returning the GlyphId
+/// Look up a Unicode codepoint in the cmap table, returning the `GlyphId`
 fn cmap_lookup(cmap: &Cmap, codepoint: u32) -> Option<GlyphId> {
     cmap.encoding_records().iter().find_map(|record| {
         let subtable = record.subtable(cmap.offset_data()).ok()?;
@@ -52,10 +54,14 @@ fn cmap_lookup(cmap: &Cmap, codepoint: u32) -> Option<GlyphId> {
     })
 }
 
-/// Convert a read-fonts SimpleGlyph to a write-fonts SimpleGlyph
+/// Convert a read-fonts `SimpleGlyph` to a write-fonts `SimpleGlyph`
 fn convert_simple_glyph(g: &read_fonts::tables::glyf::SimpleGlyph) -> WriteSimpleGlyph {
     let mut contours = Vec::new();
-    let end_pts: Vec<u16> = g.end_pts_of_contours().iter().map(|v| v.get()).collect();
+    let end_pts: Vec<u16> = g
+        .end_pts_of_contours()
+        .iter()
+        .map(font_types::BigEndian::get)
+        .collect();
     let points: Vec<read_fonts::tables::glyf::CurvePoint> = g.points().collect();
     let mut start = 0usize;
     for &end in &end_pts {
@@ -134,7 +140,11 @@ pub fn obfuscate(
         .hmtx()
         .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
     let loca = font
-        .loca(if head.index_to_loc_format() == 1 { Some(true) } else { Some(false) })
+        .loca(if head.index_to_loc_format() == 1 {
+            Some(true)
+        } else {
+            Some(false)
+        })
         .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
     let glyf_table = font
         .glyf()
@@ -159,8 +169,7 @@ pub fn obfuscate(
     // .notdef glyph (glyph index 0)
     let notdef_id = GlyphId::new(0);
     let notdef_glyph = read_glyph_from_table(&glyf_table, &loca, notdef_id);
-    let (notdef_aw, notdef_lsb) =
-        read_hmtx_entry(&hmtx, notdef_id, hhea.number_of_h_metrics());
+    let (notdef_aw, notdef_lsb) = read_hmtx_entry(&hmtx, notdef_id, hhea.number_of_h_metrics());
     glyph_entries.push((notdef_glyph, notdef_aw, notdef_lsb));
 
     for (i, (&plain_c, &shadow_c)) in plain_chars.iter().zip(shadow_chars.iter()).enumerate() {
@@ -168,7 +177,7 @@ pub fn obfuscate(
         let glyph = read_glyph_from_table(&glyf_table, &loca, plain_gid);
         let (aw, lsb) = read_hmtx_entry(&hmtx, plain_gid, hhea.number_of_h_metrics());
         glyph_entries.push((glyph, aw, lsb));
-        cmap_mappings.push((shadow_c, GlyphId::new((i as u32) + 1)));
+        cmap_mappings.push((shadow_c, GlyphId::new(u32::try_from(i).unwrap() + 1)));
     }
 
     let ttf_bytes = build_font(
@@ -229,7 +238,11 @@ pub fn obfuscate_plus(
         .hmtx()
         .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
     let loca = font
-        .loca(if head.index_to_loc_format() == 1 { Some(true) } else { Some(false) })
+        .loca(if head.index_to_loc_format() == 1 {
+            Some(true)
+        } else {
+            Some(false)
+        })
         .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
     let glyf_table = font
         .glyf()
@@ -254,8 +267,7 @@ pub fn obfuscate_plus(
     // .notdef
     let notdef_id = GlyphId::new(0);
     let notdef_glyph = read_glyph_from_table(&glyf_table, &loca, notdef_id);
-    let (notdef_aw, notdef_lsb) =
-        read_hmtx_entry(&hmtx, notdef_id, hhea.number_of_h_metrics());
+    let (notdef_aw, notdef_lsb) = read_hmtx_entry(&hmtx, notdef_id, hhea.number_of_h_metrics());
     glyph_entries.push((notdef_glyph, notdef_aw, notdef_lsb));
 
     for (i, &plain_c) in plain_chars.iter().enumerate() {
@@ -266,8 +278,8 @@ pub fn obfuscate_plus(
 
         let private_cp = private_codes[i];
         let private_char = char::from_u32(private_cp).unwrap();
-        cmap_mappings.push((private_char, GlyphId::new((i as u32) + 1)));
-        html_entities.insert(plain_c.to_string(), format!("&#x{:x}", private_cp));
+        cmap_mappings.push((private_char, GlyphId::new(u32::try_from(i).unwrap() + 1)));
+        html_entities.insert(plain_c.to_string(), format!("&#x{private_cp:x}"));
     }
 
     let ttf_bytes = build_font(
@@ -323,17 +335,12 @@ fn read_hmtx_entry(
         let record = hmtx.h_metrics().get(gid).unwrap();
         (record.advance.get(), record.side_bearing.get())
     } else {
-        let last_aw = hmtx
-            .h_metrics()
-            .get(num_long - 1)
-            .unwrap()
-            .advance
-            .get();
+        let last_aw = hmtx.h_metrics().get(num_long - 1).unwrap().advance.get();
         let lsb_idx = gid - num_long;
         let lsb = hmtx
             .left_side_bearings()
             .get(lsb_idx)
-            .map(|v| v.get())
+            .map(font_types::BigEndian::get)
             .unwrap_or(0);
         (last_aw, lsb)
     }
@@ -348,7 +355,8 @@ fn build_font(
     descender: i16,
     font_config: &FontConfig,
 ) -> Result<Vec<u8>, ObfuscateError> {
-    let num_glyphs = glyph_entries.len() as u16;
+    let num_glyphs =
+        u16::try_from(glyph_entries.len()).map_err(|_| ObfuscateError::TooManyGlyphs)?;
 
     // Build glyf + loca
     let mut glyf_builder = GlyfLocaBuilder::new();
@@ -591,14 +599,14 @@ pub fn obfuscate_full(
         swap_map.insert(shadow_gid.to_u32(), plain_gid.to_u32());
     }
 
-    let num_glyphs = maxp.num_glyphs() as u32;
+    let num_glyphs = maxp.num_glyphs();
     let num_h_metrics = hhea.number_of_h_metrics();
 
     // Rebuild glyf + loca with swapped glyphs
     let mut glyf_builder = GlyfLocaBuilder::new();
     let mut h_metrics: Vec<LongMetric> = Vec::with_capacity(num_glyphs as usize);
 
-    for gid in 0..num_glyphs {
+    for gid in 0..u32::from(num_glyphs) {
         // If this glyph should be swapped, use the source glyph instead
         let source_gid = swap_map.get(&gid).copied().unwrap_or(gid);
         let source_id = GlyphId::new(source_gid);
@@ -674,7 +682,7 @@ pub fn obfuscate_full(
         hhea.caret_slope_rise(),
         hhea.caret_slope_run(),
         hhea.caret_offset(),
-        num_glyphs as u16, // all glyphs have full metrics
+        num_glyphs, // all glyphs have full metrics
     );
     builder
         .add_table(&new_hhea)
@@ -724,8 +732,7 @@ mod tests {
     }
 
     fn load_font(path: &str) -> Vec<u8> {
-        std::fs::read(path)
-            .unwrap_or_else(|e| panic!("font not found at {path}: {e}"))
+        std::fs::read(path).unwrap_or_else(|e| panic!("font not found at {path}: {e}"))
     }
 
     // ── obfuscate validation tests ──
@@ -734,8 +741,16 @@ mod tests {
     fn obfuscate_rejects_whitespace_in_plain() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate("hello world", "abcdefghijk", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate(
+            "hello world",
+            "abcdefghijk",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::HasWhitespace));
     }
 
@@ -743,8 +758,16 @@ mod tests {
     fn obfuscate_rejects_whitespace_in_shadow() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate("abcde", "a b c", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate(
+            "abcde",
+            "a b c",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::HasWhitespace));
     }
 
@@ -752,8 +775,16 @@ mod tests {
     fn obfuscate_rejects_emoji() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate("hello😀", "abcdef", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate(
+            "hello😀",
+            "abcdef",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::HasEmoji));
     }
 
@@ -761,8 +792,16 @@ mod tests {
     fn obfuscate_rejects_same_text() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate("abc", "abc", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate(
+            "abc",
+            "abc",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::SameText));
     }
 
@@ -770,8 +809,8 @@ mod tests {
     fn obfuscate_rejects_length_mismatch() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate("abc", "de", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err =
+            obfuscate("abc", "de", &font, &default_config(), dir.path(), "t", true).unwrap_err();
         assert!(matches!(err, ObfuscateError::LengthMismatch));
     }
 
@@ -780,7 +819,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         // "aabb" dedup -> "ab", "cd" dedup -> "cd" — lengths match
-        let result = obfuscate("aabb", "ccdd", &font, &default_config(), dir.path(), "t", true);
+        let result = obfuscate(
+            "aabb",
+            "ccdd",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        );
         assert!(result.is_ok());
     }
 
@@ -791,8 +838,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "test", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "test",
+            true,
+        )
+        .unwrap();
 
         let ttf_path = &result.files["ttf"];
         assert!(ttf_path.exists());
@@ -814,8 +868,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "test", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "test",
+            true,
+        )
+        .unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -837,8 +898,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "真好", "假的", &font, &default_config(), dir.path(), "cjk", true,
-        ).unwrap();
+            "真好",
+            "假的",
+            &font,
+            &default_config(),
+            dir.path(),
+            "cjk",
+            true,
+        )
+        .unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -855,8 +923,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "0123456789", "9876543210", &font, &default_config(), dir.path(), "digits", true,
-        ).unwrap();
+            "0123456789",
+            "9876543210",
+            &font,
+            &default_config(),
+            dir.path(),
+            "digits",
+            true,
+        )
+        .unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -870,8 +945,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "woff2test", false,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "woff2test",
+            false,
+        )
+        .unwrap();
 
         assert!(result.files.contains_key("ttf"));
         assert!(result.files.contains_key("woff2"));
@@ -891,8 +973,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "ttfonly", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "ttfonly",
+            true,
+        )
+        .unwrap();
 
         assert!(result.files.contains_key("ttf"));
         assert!(!result.files.contains_key("woff2"));
@@ -904,8 +993,15 @@ mod tests {
     fn obfuscate_plus_rejects_whitespace() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate_plus("hello world", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate_plus(
+            "hello world",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::HasWhitespace));
     }
 
@@ -913,8 +1009,8 @@ mod tests {
     fn obfuscate_plus_rejects_emoji() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate_plus("hello😀", &font, &default_config(), dir.path(), "t", true)
-            .unwrap_err();
+        let err =
+            obfuscate_plus("hello😀", &font, &default_config(), dir.path(), "t", true).unwrap_err();
         assert!(matches!(err, ObfuscateError::HasEmoji));
     }
 
@@ -923,8 +1019,14 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate_plus(
-            "价格998元", &font, &default_config(), dir.path(), "plus", true,
-        ).unwrap();
+            "价格998元",
+            &font,
+            &default_config(),
+            dir.path(),
+            "plus",
+            true,
+        )
+        .unwrap();
 
         // Should have TTF file
         assert!(result.files["ttf"].exists());
@@ -934,7 +1036,10 @@ mod tests {
         assert_eq!(result.html_entities.len(), unique_chars.len());
         for c in &unique_chars {
             let entity = &result.html_entities[&c.to_string()];
-            assert!(entity.starts_with("&#x"), "entity should start with &#x: {entity}");
+            assert!(
+                entity.starts_with("&#x"),
+                "entity should start with &#x: {entity}"
+            );
         }
     }
 
@@ -942,9 +1047,8 @@ mod tests {
     fn obfuscate_plus_uses_private_use_area() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let result = obfuscate_plus(
-            "abc", &font, &default_config(), dir.path(), "pua", true,
-        ).unwrap();
+        let result =
+            obfuscate_plus("abc", &font, &default_config(), dir.path(), "pua", true).unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -956,10 +1060,13 @@ mod tests {
         assert!(cmap_lookup(&cmap, 'c' as u32).is_none());
 
         // Parse the entity codepoints and verify they're in Private Use Area
-        for (_, entity) in &result.html_entities {
+        for entity in result.html_entities.values() {
             let hex_str = entity.trim_start_matches("&#x");
             let cp = u32::from_str_radix(hex_str, 16).unwrap();
-            assert!((0xE000..=0xF8FF).contains(&cp), "codepoint {cp:#x} not in PUA");
+            assert!(
+                (0xE000..=0xF8FF).contains(&cp),
+                "codepoint {cp:#x} not in PUA"
+            );
             // And they should be in the font's cmap
             let ch = char::from_u32(cp).unwrap();
             assert!(cmap_lookup(&cmap, ch as u32).is_some());
@@ -971,8 +1078,14 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate_plus(
-            "abc", &font, &default_config(), dir.path(), "pluswoff", false,
-        ).unwrap();
+            "abc",
+            &font,
+            &default_config(),
+            dir.path(),
+            "pluswoff",
+            false,
+        )
+        .unwrap();
 
         assert!(result.files.contains_key("woff2"));
         let woff2_data = std::fs::read(&result.files["woff2"]).unwrap();
@@ -984,8 +1097,14 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate_plus(
-            "aaabbbccc", &font, &default_config(), dir.path(), "dedup", true,
-        ).unwrap();
+            "aaabbbccc",
+            &font,
+            &default_config(),
+            dir.path(),
+            "dedup",
+            true,
+        )
+        .unwrap();
 
         // Should only have 3 entities (a, b, c)
         assert_eq!(result.html_entities.len(), 3);
@@ -1007,15 +1126,28 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font_data, &default_config(), dir.path(), "metrics", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font_data,
+            &default_config(),
+            dir.path(),
+            "metrics",
+            true,
+        )
+        .unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
         let gen_hhea = gen_font.hhea().unwrap();
 
-        assert_eq!(gen_hhea.ascender().to_i16(), source_hhea.ascender().to_i16());
-        assert_eq!(gen_hhea.descender().to_i16(), source_hhea.descender().to_i16());
+        assert_eq!(
+            gen_hhea.ascender().to_i16(),
+            source_hhea.ascender().to_i16()
+        );
+        assert_eq!(
+            gen_hhea.descender().to_i16(),
+            source_hhea.descender().to_i16()
+        );
 
         let gen_head = gen_font.head().unwrap();
         let source_head = source.head().unwrap();
@@ -1028,9 +1160,7 @@ mod tests {
     fn obfuscate_full_produces_valid_ttf() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let result = obfuscate_full(
-            "真好", "假的", &font, dir.path(), "full", true,
-        ).unwrap();
+        let result = obfuscate_full("真好", "假的", &font, dir.path(), "full", true).unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).expect("generated TTF should be parseable");
@@ -1046,9 +1176,8 @@ mod tests {
         let source_maxp = source.maxp().unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let result = obfuscate_full(
-            "真好", "假的", &font_data, dir.path(), "full_all", true,
-        ).unwrap();
+        let result =
+            obfuscate_full("真好", "假的", &font_data, dir.path(), "full_all", true).unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -1062,9 +1191,7 @@ mod tests {
     fn obfuscate_full_keeps_unrelated_chars_in_cmap() {
         let font_data = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let result = obfuscate_full(
-            "真", "假", &font_data, dir.path(), "full_cmap", true,
-        ).unwrap();
+        let result = obfuscate_full("真", "假", &font_data, dir.path(), "full_cmap", true).unwrap();
 
         let generated = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&generated).unwrap();
@@ -1083,8 +1210,8 @@ mod tests {
     fn obfuscate_full_rejects_whitespace() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate_full("hello world", "abcdefghijk", &font, dir.path(), "t", true)
-            .unwrap_err();
+        let err =
+            obfuscate_full("hello world", "abcdefghijk", &font, dir.path(), "t", true).unwrap_err();
         assert!(matches!(err, ObfuscateError::HasWhitespace));
     }
 
@@ -1092,8 +1219,7 @@ mod tests {
     fn obfuscate_full_rejects_length_mismatch() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let err = obfuscate_full("abc", "de", &font, dir.path(), "t", true)
-            .unwrap_err();
+        let err = obfuscate_full("abc", "de", &font, dir.path(), "t", true).unwrap_err();
         assert!(matches!(err, ObfuscateError::LengthMismatch));
     }
 
@@ -1101,9 +1227,7 @@ mod tests {
     fn obfuscate_full_generates_woff2() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
-        let result = obfuscate_full(
-            "ab", "xy", &font, dir.path(), "full_woff2", false,
-        ).unwrap();
+        let result = obfuscate_full("ab", "xy", &font, dir.path(), "full_woff2", false).unwrap();
 
         assert!(result.files.contains_key("woff2"));
         let woff2_data = std::fs::read(&result.files["woff2"]).unwrap();
@@ -1118,8 +1242,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rare = '\u{10FFFD}';
         let err = obfuscate(
-            &rare.to_string(), "a", &font, &default_config(), dir.path(), "t", true,
-        ).unwrap_err();
+            &rare.to_string(),
+            "a",
+            &font,
+            &default_config(),
+            dir.path(),
+            "t",
+            true,
+        )
+        .unwrap_err();
         assert!(matches!(err, ObfuscateError::MissingChar(_)));
     }
 
@@ -1131,13 +1262,24 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "header", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "header",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         // TrueType sfVersion: 00 01 00 00
         assert!(data.len() > 12, "TTF file too small");
-        assert_eq!(&data[0..4], &[0x00, 0x01, 0x00, 0x00], "invalid TrueType sfVersion");
+        assert_eq!(
+            &data[0..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "invalid TrueType sfVersion"
+        );
     }
 
     /// Verify all required TrueType tables are present and parseable
@@ -1146,8 +1288,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "真好棒", "假的坏", &font, &default_config(), dir.path(), "tables", true,
-        ).unwrap();
+            "真好棒",
+            "假的坏",
+            &font,
+            &default_config(),
+            dir.path(),
+            "tables",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&data).unwrap();
@@ -1171,11 +1320,27 @@ mod tests {
 
         // Check name table has required entries
         let name = gen_font.name().expect("missing name table");
-        let name_records: Vec<u16> = name.name_record().iter().map(|r| r.name_id().to_u16()).collect();
-        assert!(name_records.contains(&1), "name table missing familyName (ID 1)");
-        assert!(name_records.contains(&2), "name table missing styleName (ID 2)");
-        assert!(name_records.contains(&4), "name table missing fullName (ID 4)");
-        assert!(name_records.contains(&6), "name table missing psName (ID 6)");
+        let name_records: Vec<u16> = name
+            .name_record()
+            .iter()
+            .map(|r| r.name_id().to_u16())
+            .collect();
+        assert!(
+            name_records.contains(&1),
+            "name table missing familyName (ID 1)"
+        );
+        assert!(
+            name_records.contains(&2),
+            "name table missing styleName (ID 2)"
+        );
+        assert!(
+            name_records.contains(&4),
+            "name table missing fullName (ID 4)"
+        );
+        assert!(
+            name_records.contains(&6),
+            "name table missing psName (ID 6)"
+        );
     }
 
     /// Verify head table has valid magic number and unitsPerEm
@@ -1184,36 +1349,56 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "ab", "xy", &font, &default_config(), dir.path(), "headcheck", true,
-        ).unwrap();
+            "ab",
+            "xy",
+            &font,
+            &default_config(),
+            dir.path(),
+            "headcheck",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&data).unwrap();
         let head = gen_font.head().unwrap();
 
         assert_eq!(head.magic_number(), 0x5F0F3CF5, "invalid head magic number");
-        assert!(head.units_per_em() >= 16 && head.units_per_em() <= 16384,
-            "unitsPerEm out of valid range: {}", head.units_per_em());
+        assert!(
+            head.units_per_em() >= 16 && head.units_per_em() <= 16384,
+            "unitsPerEm out of valid range: {}",
+            head.units_per_em()
+        );
         assert!(
             head.index_to_loc_format() == 0 || head.index_to_loc_format() == 1,
-            "invalid index_to_loc_format: {}", head.index_to_loc_format()
+            "invalid index_to_loc_format: {}",
+            head.index_to_loc_format()
         );
     }
 
-    /// Verify maxp num_glyphs matches actual glyf entries
+    /// Verify maxp `num_glyphs` matches actual glyf entries
     #[test]
     fn ttf_maxp_matches_glyph_count() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abcde", "vwxyz", &font, &default_config(), dir.path(), "maxp", true,
-        ).unwrap();
+            "abcde",
+            "vwxyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "maxp",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&data).unwrap();
         let maxp = gen_font.maxp().unwrap();
         let head = gen_font.head().unwrap();
-        let loca = gen_font.loca(Some(head.index_to_loc_format() == 1)).unwrap();
+        let loca = gen_font
+            .loca(Some(head.index_to_loc_format() == 1))
+            .unwrap();
 
         // loca has num_glyphs + 1 entries
         assert_eq!(maxp.num_glyphs(), 6); // .notdef + 5 chars
@@ -1226,14 +1411,21 @@ mod tests {
         }
     }
 
-    /// Verify hhea.number_of_h_metrics matches hmtx
+    /// Verify `hhea.number_of_h_metrics` matches hmtx
     #[test]
     fn ttf_hhea_hmtx_consistent() {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "abc", "xyz", &font, &default_config(), dir.path(), "hmetrics", true,
-        ).unwrap();
+            "abc",
+            "xyz",
+            &font,
+            &default_config(),
+            dir.path(),
+            "hmetrics",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let gen_font = FontRef::new(&data).unwrap();
@@ -1242,8 +1434,10 @@ mod tests {
 
         let num_h = hhea.number_of_h_metrics() as usize;
         let num_metrics = hmtx.h_metrics().len();
-        assert_eq!(num_h, num_metrics,
-            "hhea.number_of_h_metrics ({num_h}) != hmtx entries ({num_metrics})");
+        assert_eq!(
+            num_h, num_metrics,
+            "hhea.number_of_h_metrics ({num_h}) != hmtx entries ({num_metrics})"
+        );
     }
 
     /// Verify the generated font can be re-read and re-written (round-trip)
@@ -1252,9 +1446,15 @@ mod tests {
         let font = load_base_font();
         let dir = tempfile::tempdir().unwrap();
         let result = obfuscate(
-            "真0123456789好", "假6982075431的",
-            &font, &default_config(), dir.path(), "roundtrip", true,
-        ).unwrap();
+            "真0123456789好",
+            "假6982075431的",
+            &font,
+            &default_config(),
+            dir.path(),
+            "roundtrip",
+            true,
+        )
+        .unwrap();
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
 
@@ -1264,8 +1464,10 @@ mod tests {
 
         // Verify cmap is consistent
         for shadow_c in "假6982075431的".chars() {
-            assert!(cmap_lookup(&cmap1, shadow_c as u32).is_some(),
-                "cmap missing shadow char '{shadow_c}' on first parse");
+            assert!(
+                cmap_lookup(&cmap1, shadow_c as u32).is_some(),
+                "cmap missing shadow char '{shadow_c}' on first parse"
+            );
         }
 
         // Second parse (just ensure it doesn't panic)
@@ -1274,7 +1476,10 @@ mod tests {
         for shadow_c in "假6982075431的".chars() {
             let gid1 = cmap_lookup(&cmap1, shadow_c as u32);
             let gid2 = cmap_lookup(&cmap2, shadow_c as u32);
-            assert_eq!(gid1, gid2, "cmap inconsistent between parses for '{shadow_c}'");
+            assert_eq!(
+                gid1, gid2,
+                "cmap inconsistent between parses for '{shadow_c}'"
+            );
         }
     }
 
@@ -1342,22 +1547,23 @@ mod tests {
     ];
 
     const FONT_PATHS: &[(&str, &str)] = &[
-        ("KaiGenGothicCN",    "base-font/KaiGenGothicCN-Regular.ttf"),
-        ("Roboto",            "base-font/Roboto-Regular.ttf"),
-        ("NotoSansJP",        "base-font/NotoSansJP-Regular.ttf"),
-        ("NotoSansKR",        "base-font/NotoSansKR-Regular.ttf"),
-        ("NotoSansCJKsc",     "base-font/NotoSansCJKsc-Regular.ttf"),
+        ("KaiGenGothicCN", "base-font/KaiGenGothicCN-Regular.ttf"),
+        ("Roboto", "base-font/Roboto-Regular.ttf"),
+        ("NotoSansJP", "base-font/NotoSansJP-Regular.ttf"),
+        ("NotoSansKR", "base-font/NotoSansKR-Regular.ttf"),
+        ("NotoSansCJKsc", "base-font/NotoSansCJKsc-Regular.ttf"),
         ("WenQuanYiMicroHei", "base-font/WenQuanYiMicroHei.ttf"),
-        ("AlibabaPuHuiTi",    "base-font/Alibaba-PuHuiTi-Regular.ttf"),
-        ("OPPOSans",          "base-font/OPPOSans-R.ttf"),
-        ("MiSans",            "base-font/MiSans-Regular.ttf"),
+        ("AlibabaPuHuiTi", "base-font/Alibaba-PuHuiTi-Regular.ttf"),
+        ("OPPOSans", "base-font/OPPOSans-R.ttf"),
+        ("MiSans", "base-font/MiSans-Regular.ttf"),
     ];
 
     /// Probe font cmap to find supported language groups.
     fn detect_groups(font_data: &[u8]) -> Vec<&'static LangGroup> {
         let font = FontRef::new(font_data).expect("font parse failed in detect_groups");
         let cmap = font.cmap().expect("font has no cmap");
-        LANG_GROUPS.iter()
+        LANG_GROUPS
+            .iter()
             .filter(|g| cmap_lookup(&cmap, g.probe as u32).is_some())
             .collect()
     }
@@ -1367,16 +1573,26 @@ mod tests {
     fn assert_obfuscate(font_data: &[u8], font_name: &str, plain: &str, shadow: &str, label: &str) {
         let dir = tempfile::tempdir().unwrap();
         let tag = format!("{font_name}_{label}");
-        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
-            .unwrap_or_else(|e| panic!("{font_name}/{label}: obfuscate failed: {e}"));
+        let result = obfuscate(
+            plain,
+            shadow,
+            font_data,
+            &default_config(),
+            dir.path(),
+            &tag,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{font_name}/{label}: obfuscate failed: {e}"));
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let parsed = FontRef::new(&data)
             .unwrap_or_else(|e| panic!("{font_name}/{label}: parse failed: {e}"));
         let cmap = parsed.cmap().unwrap();
         for c in shadow.chars() {
-            assert!(cmap_lookup(&cmap, c as u32).is_some(),
-                "{font_name}/{label}: shadow char '{c}' missing in cmap");
+            assert!(
+                cmap_lookup(&cmap, c as u32).is_some(),
+                "{font_name}/{label}: shadow char '{c}' missing in cmap"
+            );
         }
     }
 
@@ -1387,8 +1603,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("{font_name}/{label}/plus({input}): failed: {e}"));
 
         let unique: Vec<char> = deduplicate_str(input).chars().collect();
-        assert_eq!(result.html_entities.len(), unique.len(),
-            "{font_name}/{label}/plus: entity count mismatch");
+        assert_eq!(
+            result.html_entities.len(),
+            unique.len(),
+            "{font_name}/{label}/plus: entity count mismatch"
+        );
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let parsed = FontRef::new(&data).unwrap();
@@ -1396,33 +1615,55 @@ mod tests {
         for (ch, entity) in &result.html_entities {
             let cp = u32::from_str_radix(entity.trim_start_matches("&#x"), 16)
                 .unwrap_or_else(|_| panic!("{font_name}/plus: bad entity {entity}"));
-            assert!((0xE000..=0xF8FF).contains(&cp),
-                "{font_name}/plus: '{ch}' -> {cp:#x} not in PUA");
-            assert!(cmap_lookup(&cmap, cp).is_some(),
-                "{font_name}/plus: PUA {cp:#x} missing in cmap");
+            assert!(
+                (0xE000..=0xF8FF).contains(&cp),
+                "{font_name}/plus: '{ch}' -> {cp:#x} not in PUA"
+            );
+            assert!(
+                cmap_lookup(&cmap, cp).is_some(),
+                "{font_name}/plus: PUA {cp:#x} missing in cmap"
+            );
         }
     }
 
     fn assert_ttf_structure(font_data: &[u8], font_name: &str, plain: &str, shadow: &str) {
         let dir = tempfile::tempdir().unwrap();
         let tag = format!("{font_name}_struct");
-        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
-            .unwrap_or_else(|e| panic!("{font_name}/struct: {e}"));
+        let result = obfuscate(
+            plain,
+            shadow,
+            font_data,
+            &default_config(),
+            dir.path(),
+            &tag,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{font_name}/struct: {e}"));
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
-        assert_eq!(&data[0..4], &[0x00, 0x01, 0x00, 0x00],
-            "{font_name}: invalid TrueType sfVersion");
+        assert_eq!(
+            &data[0..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "{font_name}: invalid TrueType sfVersion"
+        );
         let parsed = FontRef::new(&data).unwrap();
         for (table, ok) in [
-            ("head", parsed.head().is_ok()), ("hhea", parsed.hhea().is_ok()),
-            ("maxp", parsed.maxp().is_ok()), ("os2", parsed.os2().is_ok()),
-            ("cmap", parsed.cmap().is_ok()), ("glyf", parsed.glyf().is_ok()),
-            ("post", parsed.post().is_ok()), ("hmtx", parsed.hmtx().is_ok()),
+            ("head", parsed.head().is_ok()),
+            ("hhea", parsed.hhea().is_ok()),
+            ("maxp", parsed.maxp().is_ok()),
+            ("os2", parsed.os2().is_ok()),
+            ("cmap", parsed.cmap().is_ok()),
+            ("glyf", parsed.glyf().is_ok()),
+            ("post", parsed.post().is_ok()),
+            ("hmtx", parsed.hmtx().is_ok()),
         ] {
             assert!(ok, "{font_name}: missing/invalid {table}");
         }
-        assert_eq!(parsed.head().unwrap().magic_number(), 0x5F0F3CF5,
-            "{font_name}: bad head magic");
+        assert_eq!(
+            parsed.head().unwrap().magic_number(),
+            0x5F0F3CF5,
+            "{font_name}: bad head magic"
+        );
     }
 
     fn assert_preserves_metrics(font_data: &[u8], font_name: &str, plain: &str, shadow: &str) {
@@ -1432,17 +1673,34 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let tag = format!("{font_name}_metrics");
-        let result = obfuscate(plain, shadow, font_data, &default_config(), dir.path(), &tag, true)
-            .unwrap_or_else(|e| panic!("{font_name}/metrics: {e}"));
+        let result = obfuscate(
+            plain,
+            shadow,
+            font_data,
+            &default_config(),
+            dir.path(),
+            &tag,
+            true,
+        )
+        .unwrap_or_else(|e| panic!("{font_name}/metrics: {e}"));
 
         let data = std::fs::read(&result.files["ttf"]).unwrap();
         let parsed = FontRef::new(&data).unwrap();
-        assert_eq!(parsed.head().unwrap().units_per_em(), src_head.units_per_em(),
-            "{font_name}: unitsPerEm mismatch");
-        assert_eq!(parsed.hhea().unwrap().ascender().to_i16(), src_hhea.ascender().to_i16(),
-            "{font_name}: ascender mismatch");
-        assert_eq!(parsed.hhea().unwrap().descender().to_i16(), src_hhea.descender().to_i16(),
-            "{font_name}: descender mismatch");
+        assert_eq!(
+            parsed.head().unwrap().units_per_em(),
+            src_head.units_per_em(),
+            "{font_name}: unitsPerEm mismatch"
+        );
+        assert_eq!(
+            parsed.hhea().unwrap().ascender().to_i16(),
+            src_hhea.ascender().to_i16(),
+            "{font_name}: ascender mismatch"
+        );
+        assert_eq!(
+            parsed.hhea().unwrap().descender().to_i16(),
+            src_hhea.descender().to_i16(),
+            "{font_name}: descender mismatch"
+        );
     }
 
     // ── Test entry points ──
@@ -1502,8 +1760,15 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let tag = format!("{name}_woff2");
             let result = obfuscate(
-                plain, shadow, &font_data, &default_config(), dir.path(), &tag, false,
-            ).unwrap_or_else(|e| panic!("{name}/woff2: {e}"));
+                plain,
+                shadow,
+                &font_data,
+                &default_config(),
+                dir.path(),
+                &tag,
+                false,
+            )
+            .unwrap_or_else(|e| panic!("{name}/woff2: {e}"));
 
             assert!(result.files.contains_key("woff2"), "{name}: no woff2");
             let woff2 = std::fs::read(&result.files["woff2"]).unwrap();

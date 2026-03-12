@@ -8,6 +8,7 @@ axum = "0.8.8"
 tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+font-types = "0.11.0"
 read-fonts = "0.37.0"
 write-fonts = "0.45.0"
 base64 = "0.22.1"
@@ -21,3 +22,37 @@ ttf2woff2 = { version = "0.11.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# 正确性
+correctness = { level = "deny", priority = -1 }
+
+# 性能
+perf = { level = "warn", priority = -1 }
+
+# 可疑代码
+suspicious = { level = "warn", priority = -1 }
+
+# 生产级严格 lint
+enum_glob_use = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+needless_pass_by_value = "warn"
+redundant_closure_for_method_calls = "warn"
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+trivially_copy_pass_by_ref = "warn"
+implicit_clone = "warn"
+manual_let_else = "warn"
+unused_self = "warn"
+return_self_not_must_use = "warn"
+doc_markdown = "warn"
+needless_raw_string_hashes = "warn"

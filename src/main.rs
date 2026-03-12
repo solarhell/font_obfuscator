@@ -31,7 +31,7 @@ async fn main() {
         // Try relative to executable
         let exe_dir = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_default();
         let alt_path = exe_dir.join(&config.base_font_path);
         std::fs::read(&alt_path).unwrap_or_else(|_| {
@@ -92,11 +92,15 @@ async fn encrypt(
             let mut base64ed = std::collections::HashMap::new();
             for (format, path) in &result.files {
                 match utils::base64_binary(path) {
-                    Ok(b64) => { base64ed.insert(format.clone(), b64); }
+                    Ok(b64) => {
+                        base64ed.insert(format.clone(), b64);
+                    }
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::to_value(error_response::<()>(&e.to_string())).unwrap()),
+                            Json(
+                                serde_json::to_value(error_response::<()>(&e.to_string())).unwrap(),
+                            ),
                         );
                     }
                 }
@@ -136,11 +140,15 @@ async fn encrypt_plus(
             let mut base64ed = std::collections::HashMap::new();
             for (format, path) in &result.files {
                 match utils::base64_binary(path) {
-                    Ok(b64) => { base64ed.insert(format.clone(), b64); }
+                    Ok(b64) => {
+                        base64ed.insert(format.clone(), b64);
+                    }
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::to_value(error_response::<()>(&e.to_string())).unwrap()),
+                            Json(
+                                serde_json::to_value(error_response::<()>(&e.to_string())).unwrap(),
+                            ),
                         );
                     }
                 }
