@@ -38,6 +38,7 @@ PORT=8080 ./target/release/font_obfuscator
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `PORT` | `1323` | 服务监听端口 |
+| `LISTEN_ADDR` | `127.0.0.1` | 服务监听地址 |
 | `BASE_FONT_PATH` | `base-font/KaiGenGothicCN-Regular.ttf` | 基础字体文件路径 |
 
 ### API
@@ -171,6 +172,7 @@ PORT=8080 ./target/release/font_obfuscator
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `1323` | Server listening port |
+| `LISTEN_ADDR` | `127.0.0.1` | Server listen address |
 | `BASE_FONT_PATH` | `base-font/KaiGenGothicCN-Regular.ttf` | Base font file path |
 
 ### API
