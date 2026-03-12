@@ -23,7 +23,7 @@ multidict==5.1.0
 oss2==2.14.0
 pycryptodome==3.19.1
 pytz==2021.1
-requests==2.31.0
+requests==2.32.5
 requests-async==0.6.2
 rfc3986==2.0.0
 sanic==22.12.0
