@@ -26,7 +26,7 @@
 # 构建
 cargo build --release
 
-# 运行（默认监听 0.0.0.0:1323）
+# 运行（默认监听 127.0.0.1:1323）
 ./target/release/font_obfuscator
 
 # 自定义端口
@@ -159,7 +159,7 @@ Built with Rust, using Google's [fontations](https://github.com/googlefonts/font
 # Build
 cargo build --release
 
-# Run (listens on 0.0.0.0:1323 by default)
+# Run (listens on 127.0.0.1:1323 by default)
 ./target/release/font_obfuscator
 
 # Custom port
