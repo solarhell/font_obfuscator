@@ -66,15 +66,28 @@ async fn encrypt(
     let filename = uuid::Uuid::new_v4().to_string();
     let output_dir = PathBuf::from("output");
 
-    match crate::core::obfuscate(
-        &req.plaintext,
-        &req.shadowtext,
-        &state.font_data,
-        &state.config.font,
-        &output_dir,
-        &filename,
-        req.only_ttf,
-    ) {
+    let obfuscate_result = if req.keep_all {
+        crate::core::obfuscate_full(
+            &req.plaintext,
+            &req.shadowtext,
+            &state.font_data,
+            &output_dir,
+            &filename,
+            req.only_ttf,
+        )
+    } else {
+        crate::core::obfuscate(
+            &req.plaintext,
+            &req.shadowtext,
+            &state.font_data,
+            &state.config.font,
+            &output_dir,
+            &filename,
+            req.only_ttf,
+        )
+    };
+
+    match obfuscate_result {
         Ok(result) => {
             let mut base64ed = std::collections::HashMap::new();
             for (format, path) in &result.files {

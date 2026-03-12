@@ -48,7 +48,9 @@ PORT=8080 ./target/release/font-obfuscator
 
 #### POST /api/encrypt
 
-普通混淆（明文 + 阴书）。
+普通混淆（明文 + 阴书）。生成的字体只包含映射的字符。
+
+设置 `keep_all: true` 可保留原字体中的所有字符，仅替换指定字符的字形（[#97](https://github.com/solarhell/fontObfuscator/issues/97)）。
 
 ```bash
 curl -X POST http://127.0.0.1:1323/api/encrypt \
@@ -56,7 +58,8 @@ curl -X POST http://127.0.0.1:1323/api/encrypt \
   -d '{
     "plaintext": "真0123456789好",
     "shadowtext": "假6982075431的",
-    "only_ttf": false
+    "only_ttf": false,
+    "keep_all": false
   }'
 ```
 
@@ -178,7 +181,9 @@ Health check, returns `it works`.
 
 #### POST /api/encrypt
 
-Basic obfuscation (plaintext + shadow text).
+Basic obfuscation (plaintext + shadow text). The generated font only contains the mapped characters.
+
+Set `keep_all: true` to preserve all characters from the original font, only replacing the specified character glyphs ([#97](https://github.com/solarhell/fontObfuscator/issues/97)).
 
 ```bash
 curl -X POST http://127.0.0.1:1323/api/encrypt \
@@ -186,7 +191,8 @@ curl -X POST http://127.0.0.1:1323/api/encrypt \
   -d '{
     "plaintext": "real0123456789content",
     "shadowtext": "fake6982075431garbage",
-    "only_ttf": false
+    "only_ttf": false,
+    "keep_all": false
   }'
 ```
 

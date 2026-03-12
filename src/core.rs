@@ -514,6 +514,193 @@ fn build_name_table(config: &FontConfig) -> WriteName {
     WriteName::new(records)
 }
 
+/// Full-font obfuscation: keep all original glyphs, only swap specified pairs.
+/// This preserves the complete character set of the original font.
+pub fn obfuscate_full(
+    plain_text: &str,
+    shadow_text: &str,
+    font_data: &[u8],
+    output_dir: &Path,
+    filename: &str,
+    only_ttf: bool,
+) -> Result<ObfuscateResult, ObfuscateError> {
+    if str_has_whitespace(plain_text) || str_has_whitespace(shadow_text) {
+        return Err(ObfuscateError::HasWhitespace);
+    }
+    if str_has_emoji(plain_text) || str_has_emoji(shadow_text) {
+        return Err(ObfuscateError::HasEmoji);
+    }
+
+    let plain_text = deduplicate_str(plain_text);
+    let shadow_text = deduplicate_str(shadow_text);
+
+    if plain_text == shadow_text {
+        return Err(ObfuscateError::SameText);
+    }
+
+    let plain_chars: Vec<char> = plain_text.chars().collect();
+    let shadow_chars: Vec<char> = shadow_text.chars().collect();
+
+    if plain_chars.len() != shadow_chars.len() {
+        return Err(ObfuscateError::LengthMismatch);
+    }
+
+    let font = FontRef::new(font_data).map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let cmap_table = font
+        .cmap()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let head = font
+        .head()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let hhea = font
+        .hhea()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let hmtx = font
+        .hmtx()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let maxp = font
+        .maxp()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let loca = font
+        .loca(if head.index_to_loc_format() == 1 {
+            Some(true)
+        } else {
+            Some(false)
+        })
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+    let glyf_table = font
+        .glyf()
+        .map_err(|e| ObfuscateError::FontRead(e.to_string()))?;
+
+    for &c in &plain_chars {
+        if cmap_lookup(&cmap_table, c as u32).is_none() {
+            return Err(ObfuscateError::MissingChar(c));
+        }
+    }
+    for &c in &shadow_chars {
+        if cmap_lookup(&cmap_table, c as u32).is_none() {
+            return Err(ObfuscateError::MissingChar(c));
+        }
+    }
+
+    // Build swap map: shadow glyph ID -> plain glyph ID (replace shadow's glyph with plain's)
+    let mut swap_map: HashMap<u32, u32> = HashMap::new();
+    for (&plain_c, &shadow_c) in plain_chars.iter().zip(shadow_chars.iter()) {
+        let plain_gid = cmap_lookup(&cmap_table, plain_c as u32).unwrap();
+        let shadow_gid = cmap_lookup(&cmap_table, shadow_c as u32).unwrap();
+        swap_map.insert(shadow_gid.to_u32(), plain_gid.to_u32());
+    }
+
+    let num_glyphs = maxp.num_glyphs() as u32;
+    let num_h_metrics = hhea.number_of_h_metrics();
+
+    // Rebuild glyf + loca with swapped glyphs
+    let mut glyf_builder = GlyfLocaBuilder::new();
+    let mut h_metrics: Vec<LongMetric> = Vec::with_capacity(num_glyphs as usize);
+
+    for gid in 0..num_glyphs {
+        // If this glyph should be swapped, use the source glyph instead
+        let source_gid = swap_map.get(&gid).copied().unwrap_or(gid);
+        let source_id = GlyphId::new(source_gid);
+        let glyph = read_glyph_from_table(&glyf_table, &loca, source_id);
+        match &glyph {
+            Some(g) => {
+                glyf_builder
+                    .add_glyph(g)
+                    .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+            }
+            None => {
+                let empty = WriteSimpleGlyph::default();
+                glyf_builder
+                    .add_glyph(&empty)
+                    .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+            }
+        }
+
+        let (aw, lsb) = read_hmtx_entry(&hmtx, source_id, num_h_metrics);
+        h_metrics.push(LongMetric {
+            advance: aw,
+            side_bearing: lsb,
+        });
+    }
+
+    let (new_glyf, new_loca, loca_format) = glyf_builder.build();
+    let new_hmtx = WriteHmtx::new(h_metrics, vec![]);
+
+    // Build font: copy most tables from original, replace glyf/loca/hmtx
+    let mut builder = FontBuilder::new();
+    builder
+        .add_table(&new_glyf)
+        .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+    builder
+        .add_table(&new_loca)
+        .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+    builder
+        .add_table(&new_hmtx)
+        .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+
+    // Update head's index_to_loc_format
+    let new_head = WriteHead::new(
+        write_fonts::types::Fixed::from_f64(head.font_revision().to_f64()),
+        0,
+        write_fonts::tables::head::Flags::from_bits(head.flags().bits()).unwrap_or_default(),
+        head.units_per_em(),
+        head.created(),
+        head.modified(),
+        head.x_min(),
+        head.y_min(),
+        head.x_max(),
+        head.y_max(),
+        write_fonts::tables::head::MacStyle::from_bits(head.mac_style().bits()).unwrap_or_default(),
+        head.lowest_rec_ppem(),
+        match loca_format {
+            LocaFormat::Short => 0i16,
+            LocaFormat::Long => 1i16,
+        },
+    );
+    builder
+        .add_table(&new_head)
+        .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+
+    // Update hhea with correct number_of_h_metrics
+    let new_hhea = WriteHhea::new(
+        hhea.ascender().to_i16().into(),
+        hhea.descender().to_i16().into(),
+        hhea.line_gap().to_i16().into(),
+        hhea.advance_width_max().to_u16().into(),
+        hhea.min_left_side_bearing().to_i16().into(),
+        hhea.min_right_side_bearing().to_i16().into(),
+        hhea.x_max_extent().to_i16().into(),
+        hhea.caret_slope_rise(),
+        hhea.caret_slope_run(),
+        hhea.caret_offset(),
+        num_glyphs as u16, // all glyphs have full metrics
+    );
+    builder
+        .add_table(&new_hhea)
+        .map_err(|e| ObfuscateError::FontBuild(e.to_string()))?;
+
+    // Copy all other tables from the original font
+    builder.copy_missing_tables(font);
+
+    let ttf_bytes = builder.build();
+
+    std::fs::create_dir_all(output_dir)?;
+    let ttf_path = output_dir.join(format!("{filename}.ttf"));
+    std::fs::write(&ttf_path, &ttf_bytes)?;
+
+    let mut files = HashMap::new();
+    files.insert("ttf".into(), ttf_path);
+
+    if !only_ttf {
+        let woff2_path = output_dir.join(format!("{filename}.woff2"));
+        convert_ttf_to_woff2(&ttf_bytes, &woff2_path)?;
+        files.insert("woff2".into(), woff2_path);
+    }
+
+    Ok(ObfuscateResult { files })
+}
+
 /// Convert TTF bytes to WOFF2 format
 fn convert_ttf_to_woff2(ttf_bytes: &[u8], output_path: &Path) -> Result<(), ObfuscateError> {
     let woff2_bytes = ttf2woff2::encode(ttf_bytes, ttf2woff2::BrotliQuality::default())
@@ -828,6 +1015,94 @@ mod tests {
         let gen_head = gen_font.head().unwrap();
         let source_head = source.head().unwrap();
         assert_eq!(gen_head.units_per_em(), source_head.units_per_em());
+    }
+
+    // ── obfuscate_full tests ──
+
+    #[test]
+    fn obfuscate_full_produces_valid_ttf() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate_full(
+            "真好", "假的", &font, dir.path(), "full", true,
+        ).unwrap();
+
+        let generated = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&generated).expect("generated TTF should be parseable");
+        assert!(gen_font.head().is_ok());
+        assert!(gen_font.cmap().is_ok());
+        assert!(gen_font.glyf().is_ok());
+    }
+
+    #[test]
+    fn obfuscate_full_preserves_all_chars() {
+        let font_data = load_base_font();
+        let source = FontRef::new(&font_data).unwrap();
+        let source_maxp = source.maxp().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate_full(
+            "真好", "假的", &font_data, dir.path(), "full_all", true,
+        ).unwrap();
+
+        let generated = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&generated).unwrap();
+        let gen_maxp = gen_font.maxp().unwrap();
+
+        // Full font should have the same number of glyphs as the original
+        assert_eq!(gen_maxp.num_glyphs(), source_maxp.num_glyphs());
+    }
+
+    #[test]
+    fn obfuscate_full_keeps_unrelated_chars_in_cmap() {
+        let font_data = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate_full(
+            "真", "假", &font_data, dir.path(), "full_cmap", true,
+        ).unwrap();
+
+        let generated = std::fs::read(&result.files["ttf"]).unwrap();
+        let gen_font = FontRef::new(&generated).unwrap();
+        let cmap = gen_font.cmap().unwrap();
+
+        // Unrelated chars should still be in the font
+        assert!(cmap_lookup(&cmap, 'a' as u32).is_some());
+        assert!(cmap_lookup(&cmap, '0' as u32).is_some());
+        assert!(cmap_lookup(&cmap, '好' as u32).is_some());
+        // Both plain and shadow chars remain in cmap (original cmap preserved)
+        assert!(cmap_lookup(&cmap, '真' as u32).is_some());
+        assert!(cmap_lookup(&cmap, '假' as u32).is_some());
+    }
+
+    #[test]
+    fn obfuscate_full_rejects_whitespace() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let err = obfuscate_full("hello world", "abcdefghijk", &font, dir.path(), "t", true)
+            .unwrap_err();
+        assert!(matches!(err, ObfuscateError::HasWhitespace));
+    }
+
+    #[test]
+    fn obfuscate_full_rejects_length_mismatch() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let err = obfuscate_full("abc", "de", &font, dir.path(), "t", true)
+            .unwrap_err();
+        assert!(matches!(err, ObfuscateError::LengthMismatch));
+    }
+
+    #[test]
+    fn obfuscate_full_generates_woff2() {
+        let font = load_base_font();
+        let dir = tempfile::tempdir().unwrap();
+        let result = obfuscate_full(
+            "ab", "xy", &font, dir.path(), "full_woff2", false,
+        ).unwrap();
+
+        assert!(result.files.contains_key("woff2"));
+        let woff2_data = std::fs::read(&result.files["woff2"]).unwrap();
+        assert_eq!(&woff2_data[..4], b"wOF2");
     }
 
     // ── missing char test ──

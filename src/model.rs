@@ -6,6 +6,9 @@ pub struct EncryptRequest {
     pub plaintext: String,
     pub shadowtext: String,
     pub only_ttf: bool,
+    /// When true, keep all characters from the original font, only swap specified pairs.
+    #[serde(default)]
+    pub keep_all: bool,
 }
 
 #[derive(Deserialize)]
