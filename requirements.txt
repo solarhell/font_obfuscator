@@ -30,5 +30,5 @@ sanic==22.12.0
 six==1.16.0
 ujson==5.9.0
 urllib3==1.26.18
-uvloop==0.15.2
+uvloop==0.22.1
 websockets==10.4
