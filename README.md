@@ -1,4 +1,4 @@
-# fontObfuscator
+# font_obfuscator
 
 [中文](#中文) | [English](#english)
 
@@ -27,10 +27,10 @@
 cargo build --release
 
 # 运行（默认监听 0.0.0.0:1323）
-./target/release/font-obfuscator
+./target/release/font_obfuscator
 
 # 自定义端口
-PORT=8080 ./target/release/font-obfuscator
+PORT=8080 ./target/release/font_obfuscator
 ```
 
 ### 环境变量
@@ -50,7 +50,7 @@ PORT=8080 ./target/release/font-obfuscator
 
 普通混淆（明文 + 阴书）。生成的字体只包含映射的字符。
 
-设置 `keep_all: true` 可保留原字体中的所有字符，仅替换指定字符的字形（[#97](https://github.com/solarhell/fontObfuscator/issues/97)）。
+设置 `keep_all: true` 可保留原字体中的所有字符，仅替换指定字符的字形（[#97](https://github.com/solarhell/font_obfuscator/issues/97)）。
 
 ```bash
 curl -X POST http://127.0.0.1:1323/api/encrypt \
@@ -160,10 +160,10 @@ Built with Rust, using Google's [fontations](https://github.com/googlefonts/font
 cargo build --release
 
 # Run (listens on 0.0.0.0:1323 by default)
-./target/release/font-obfuscator
+./target/release/font_obfuscator
 
 # Custom port
-PORT=8080 ./target/release/font-obfuscator
+PORT=8080 ./target/release/font_obfuscator
 ```
 
 ### Environment Variables
@@ -183,7 +183,7 @@ Health check, returns `it works`.
 
 Basic obfuscation (plaintext + shadow text). The generated font only contains the mapped characters.
 
-Set `keep_all: true` to preserve all characters from the original font, only replacing the specified character glyphs ([#97](https://github.com/solarhell/fontObfuscator/issues/97)).
+Set `keep_all: true` to preserve all characters from the original font, only replacing the specified character glyphs ([#97](https://github.com/solarhell/font_obfuscator/issues/97)).
 
 ```bash
 curl -X POST http://127.0.0.1:1323/api/encrypt \
