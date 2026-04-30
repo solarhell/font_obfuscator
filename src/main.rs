@@ -63,7 +63,7 @@ async fn encrypt(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EncryptRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let filename = uuid::Uuid::new_v4().to_string();
+    let filename = uuid::Uuid::now_v7().to_string();
     let output_dir = PathBuf::from("output");
 
     let obfuscate_result = if req.keep_all {
@@ -125,7 +125,7 @@ async fn encrypt_plus(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EncryptPlusRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let filename = uuid::Uuid::new_v4().to_string();
+    let filename = uuid::Uuid::now_v7().to_string();
     let output_dir = PathBuf::from("output");
 
     match crate::core::obfuscate_plus(
