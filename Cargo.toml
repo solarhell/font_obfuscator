@@ -7,7 +7,7 @@ rust-version = "1.95"
 [dependencies]
 axum = "0.8.9"
 base64 = "0.22.1"
-font-types = "0.11.3"
+font-types = "0.12.7"
 rand = "0.10.1"
 read-fonts = "0.39.2"
 serde = {
