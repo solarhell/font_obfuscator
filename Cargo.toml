@@ -34,7 +34,7 @@ uuid = {
     version = "1.23.1",
     features = ["v7"],
 }
-write-fonts = "0.48.1"
+write-fonts = "0.56.0"
 
 [dev-dependencies]
 tempfile = "3"
